@@ -31,3 +31,8 @@ public class MetaMorphAgent {
         }
     }
 }
+
+// javac MetaMorphAgent.java
+// jar cmf manifest.txt metamorph.jar MetaMorphAgent.class
+// java -javaagent:metamorph.jar -cp . YourProgram
+
