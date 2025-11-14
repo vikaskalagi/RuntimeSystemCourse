@@ -1,63 +1,83 @@
 import sys
 import time
+import json
+import threading
 import inspect
 import types
+import gc
 
-class RuntimeAnalyzer:
+class RuntimeProbe:
     def __init__(self):
-        self.call_stack = []
-        self.data = []
+        self.events = []
 
     def trace_calls(self, frame, event, arg):
+        if event not in ('call', 'return'):
+            return self.trace_calls
+
+        code = frame.f_code
+        func_name = code.co_name
+        lineno = frame.f_lineno
+        filename = frame.f_filename
+        call_depth = len(inspect.stack(0)) - 1  # approximate call depth
+
         if event == 'call':
-            code = frame.f_code
-            func_name = code.co_name
-            filename = code.co_filename
-            lineno = frame.f_lineno
             start_time = time.time()
-            local_vars = frame.f_locals.copy()
-            
-            self.call_stack.append({
-                'func_name': func_name,
-                'filename': filename,
-                'lineno': lineno,
-                'start_time': start_time,
-                'locals': local_vars
-            })
-            
+            local_vars = {k: type(v).__name__ for k, v in frame.f_locals.items()}
+            frame.f_locals['_probe_start_time'] = start_time
+            frame.f_locals['_probe_locals_snapshot'] = local_vars
+
         elif event == 'return':
-            if self.call_stack:
-                call_info = self.call_stack.pop()
-                duration = time.time() - call_info['start_time']
-                call_info.update({
-                    'return_value': arg,
-                    'duration': duration,
-                    'return_type': type(arg).__name__
-                })
-                self.data.append(call_info)
+            start_time = frame.f_locals.get('_probe_start_time', time.time())
+            duration = (time.time() - start_time) * 1000  # ms
+            locals_snapshot = frame.f_locals.get('_probe_locals_snapshot', {})
+            ret_val = arg
+            ret_type = type(ret_val).__name__
+
+            event_data = {
+                "timestamp": time.time(),
+                "language": "Python",
+                "execution": {
+                    "function": func_name,
+                    "call_depth": call_depth,
+                },
+                "memory": {
+                    "object_size": sys.getsizeof(ret_val),
+                    "stack_frame_bytes": sys.getsizeof(frame.f_locals),
+                },
+                "type": {
+                    "type_name": type(ret_val).__name__,
+                    "is_class": isinstance(ret_val, type),
+                },
+                "dynamic": {
+                    "locals": locals_snapshot,
+                    "return_type": ret_type
+                },
+                "performance": {
+                    "exec_time_ms": duration
+                },
+                "gc": {
+                    "enabled": True,
+                    "collected": gc.collect(),
+                    "gc_objects": len(gc.get_objects())
+                }
+            }
+            self.events.append(event_data)
+
         return self.trace_calls
 
     def analyze(self, target_module):
         sys.settrace(self.trace_calls)
         try:
-            target_module.main()  # Expecting the target code to define a main()
+            target_module.main()
         finally:
             sys.settrace(None)
-        self.summarize()
+        self.output_results()
 
-    def summarize(self):
-        print("\n=== Runtime Analysis Summary ===")
-        for i, call in enumerate(self.data, 1):
-            print(f"\n[{i}] Function: {call['func_name']}")
-            print(f"File: {call['filename']} @ line {call['lineno']}")
-            print(f"Duration: {call['duration']:.5f}s")
-            print(f"Return Type: {call['return_type']}")
-            print(f"Returned: {repr(call['return_value'])}")
-            print(f"Locals at Call: {call['locals']}")
-        print("\nTotal Functions Tracked:", len(self.data))
+    def output_results(self):
+        print(json.dumps(self.events, indent=2))
 
-# Example usage:
+# Example usage
 if __name__ == "__main__":
-    import example_target  # Your target program
-    analyzer = RuntimeAnalyzer()
-    analyzer.analyze(example_target)
+    import matrix_mul  # Replace with your target file/module
+    probe = RuntimeProbe()
+    probe.analyze(matrix_mul)
